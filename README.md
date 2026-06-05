@@ -49,6 +49,11 @@ cd openbao_wrapper
 
 Make sure `~/.local/bin` is on your `PATH`.
 
+> **Already have a `bao-run`?** `install.sh` won't overwrite a different existing
+> `bao-run` without `--force`. If your current callers relied on a different
+> `BAO_SECRET_PATH` default, set `BAO_SECRET_PATH` explicitly before switching —
+> this build defaults to `secret/app`.
+
 ## Set up OpenBao (one-time, server side)
 
 If you already run OpenBao/Vault with an AppRole and a KV v2 secret, skip to
