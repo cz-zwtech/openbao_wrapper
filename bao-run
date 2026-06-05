@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# bao-run — fetch secrets from OpenBao (or Vault) via AppRole, then exec a child
+# process with those secrets in its environment. The values never touch disk and
+# are never logged; they live only in the child's environment for its lifetime.
+#
+# Usage:
+#   bao-run KEY1 KEY2 ... -- command args...
+#
+# Examples:
+#   bao-run ANTHROPIC_API_KEY -- printenv ANTHROPIC_API_KEY
+#   bao-run DB_PASSWORD API_TOKEN -- ./start-server.sh
+#
+# Required configuration (env vars; auto-sourced from $BAO_ENV_FILE if absent):
+#   BAO_ADDR        — OpenBao/Vault address, e.g. https://openbao.example.com:8200
+#   BAO_ROLE_ID     — AppRole role-id
+#   BAO_SECRET_ID   — AppRole secret-id
+#
+# Optional:
+#   BAO_SECRET_PATH — KV v2 logical path holding the keys (default: secret/app)
+#   BAO_ENV_FILE    — file to source BAO_* from when not already in env
+#                     (default: $HOME/.config/bao-run/env)
+#
+# Exit codes: 64 usage · 65 login · 66 read · 67 missing key.
+
+set -euo pipefail
+
+# Fall back to $BAO_ENV_FILE if the bootstrap creds aren't in the inherited env
+# (e.g. systemd units / daemons that don't inherit your shell rc).
+BAO_ENV_FILE="${BAO_ENV_FILE:-$HOME/.config/bao-run/env}"
+if [[ -z "${BAO_ADDR:-}" || -z "${BAO_ROLE_ID:-}" || -z "${BAO_SECRET_ID:-}" ]]; then
+  if [[ -r "$BAO_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$BAO_ENV_FILE"
+    set +a
+  fi
+fi
+
+: "${BAO_ADDR:?BAO_ADDR not set (and not found in $BAO_ENV_FILE)}"
+: "${BAO_ROLE_ID:?BAO_ROLE_ID not set (and not found in $BAO_ENV_FILE)}"
+: "${BAO_SECRET_ID:?BAO_SECRET_ID not set (and not found in $BAO_ENV_FILE)}"
+
+SECRET_PATH="${BAO_SECRET_PATH:-secret/app}"
+
+# Parse args: collect KEYs until `--`, then the command that follows it.
+declare -a keys=()
+while [[ $# -gt 0 && "$1" != "--" ]]; do
+  keys+=("$1")
+  shift
+done
+if [[ $# -eq 0 || "$1" != "--" ]]; then
+  echo "bao-run: missing -- separator between keys and command" >&2
+  exit 64
+fi
+shift
+if [[ $# -eq 0 ]]; then
+  echo "bao-run: no command after --" >&2
+  exit 64
+fi
+
+# Resolve "mount/path" → "mount/data/path" for the KV v2 HTTP API.
+mount="${SECRET_PATH%%/*}"
+rest="${SECRET_PATH#*/}"
+kv_url="${BAO_ADDR}/v1/${mount}/data/${rest}"
+
+# AppRole login → short-lived token.
+login_body=$(printf '{"role_id":"%s","secret_id":"%s"}' "$BAO_ROLE_ID" "$BAO_SECRET_ID")
+login_resp=$(curl -sS --fail-with-body --max-time 5 \
+  -X POST -H "Content-Type: application/json" \
+  --data "$login_body" \
+  "${BAO_ADDR}/v1/auth/approle/login" 2>&1) || {
+    echo "bao-run: AppRole login failed against ${BAO_ADDR}" >&2
+    exit 65
+  }
+token=$(printf '%s' "$login_resp" | jq -r '.auth.client_token // empty')
+if [[ -z "$token" ]]; then
+  echo "bao-run: login returned no client_token" >&2
+  exit 65
+fi
+
+# Fetch the KV blob (one request; all keys come from one entry).
+secret_resp=$(curl -sS --fail-with-body --max-time 5 \
+  -H "X-Vault-Token: $token" \
+  "$kv_url" 2>&1) || {
+    echo "bao-run: failed to read $kv_url" >&2
+    exit 66
+  }
+
+# Build env pairs; fail fast if any requested key is missing.
+declare -a env_pairs=()
+for key in "${keys[@]}"; do
+  val=$(printf '%s' "$secret_resp" | jq -r --arg k "$key" '.data.data[$k] // empty')
+  if [[ -z "$val" ]]; then
+    echo "bao-run: key '$key' not present at $SECRET_PATH" >&2
+    exit 67
+  fi
+  env_pairs+=("${key}=${val}")
+done
+
+# Revoke our short-lived token before handing off (best-effort).
+curl -sS --max-time 2 -X POST -H "X-Vault-Token: $token" \
+  "${BAO_ADDR}/v1/auth/token/revoke-self" >/dev/null 2>&1 || true
+
+# Exec the child with the requested secrets in its environment.
+exec env "${env_pairs[@]}" "$@"
