@@ -49,6 +49,40 @@ cd openbao_wrapper
 
 Make sure `~/.local/bin` is on your `PATH`.
 
+## Set up OpenBao (one-time, server side)
+
+If you already run OpenBao/Vault with an AppRole and a KV v2 secret, skip to
+**Configure**. Otherwise, with the `bao` CLI authenticated as an admin against
+your server:
+
+```bash
+# 1. A KV v2 secrets engine (skip if `secret/` already exists)
+bao secrets enable -path=secret kv-v2
+
+# 2. AppRole auth
+bao auth enable approle
+
+# 3. A policy that can READ your secret entry (note the data/ segment for KV v2)
+bao policy write app-read - <<'EOF'
+path "secret/data/app" { capabilities = ["read"] }
+EOF
+
+# 4. A role bound to that policy, issuing short-lived tokens
+bao write auth/approle/role/app \
+  token_policies="app-read" token_ttl=10m token_max_ttl=30m
+
+# 5. The bootstrap creds bao-run needs
+bao read  auth/approle/role/app/role-id        # → BAO_ROLE_ID  (stable)
+bao write -f auth/approle/role/app/secret-id   # → BAO_SECRET_ID (a credential; shown once)
+
+# 6. Put your secrets in the entry bao-run reads (logical path `secret/app`)
+bao kv put secret/app ANTHROPIC_API_KEY=sk-ant-... DB_PASSWORD=...
+```
+
+`BAO_SECRET_PATH=secret/app` is the *logical* path; the policy and the KV v2 API
+use `secret/data/app`. Add a key to that entry and it's immediately fetchable by
+name (`bao-run ANTHROPIC_API_KEY -- …`).
+
 ## Configure
 
 `bao-run` needs three values to authenticate, read from the environment (and
@@ -89,6 +123,26 @@ the `DB_PASSWORD` field of that entry).
 
 If login or the read fails, or a requested key is missing, it exits non-zero
 with a short diagnostic to stderr — and never the secret values.
+
+## For Claude / AI agents
+
+Working in a repo that uses `bao-run`? The rule is **fetch secrets at the
+launcher boundary, never read them from files.** When a command needs a secret,
+wrap it — don't `cat` an env file, don't print secret values into the session,
+and don't bake them into a config you write:
+
+```bash
+bao-run KEY1 KEY2 ... -- <the command that needs them>
+```
+
+- **MCP server** (`~/.claude.json`): `"command": "bao-run", "args": ["API_KEY", "--", "actual-cmd", …]` — no `env` block with the value in it.
+- **A script that needs a key:** `bao-run API_KEY -- python3 script.py`
+- **A tool that accepts a "command that prints the key":** point it at `bao-run KEY -- printenv KEY`.
+
+The values exist only in the child process's environment, only for its lifetime.
+If a key is missing or the vault is unreachable, `bao-run` exits non-zero with a
+diagnostic (never the value) — surface that; don't work around it by hardcoding a
+secret.
 
 ## Security notes
 
