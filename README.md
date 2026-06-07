@@ -49,7 +49,7 @@ sudo apt install -y curl jq
 failing later with a cryptic error.)
 
 ```bash
-git clone https://github.com/coreyzwart-zwtech/openbao_wrapper.git
+git clone https://github.com/cz-zwtech/openbao_wrapper.git
 cd openbao_wrapper
 ./install.sh            # symlinks bao-run → ~/.local/bin (use --copy to copy)
 ```
