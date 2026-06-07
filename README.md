@@ -39,7 +39,14 @@ CKN_API_KEY_CMD='bao-run ANTHROPIC_API_KEY -- printenv ANTHROPIC_API_KEY'
 
 ## Install
 
-Requires `bash`, `curl`, and `jq`.
+Requires `bash`, `curl`, and `jq`. On a fresh Debian/Ubuntu/WSL box:
+
+```bash
+sudo apt install -y curl jq
+```
+
+(`install.sh` checks for these and tells you exactly what's missing rather than
+failing later with a cryptic error.)
 
 ```bash
 git clone https://github.com/coreyzwart-zwtech/openbao_wrapper.git

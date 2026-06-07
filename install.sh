@@ -18,6 +18,20 @@ for a in "$@"; do
   esac
 done
 
+# Preflight: bao-run needs these at runtime. Check now and fail with a clear
+# message rather than letting a fresh box hit a cryptic "jq: command not found"
+# on the first actual run.
+missing=()
+for dep in bash curl jq; do
+  command -v "$dep" >/dev/null 2>&1 || missing+=("$dep")
+done
+if (( ${#missing[@]} )); then
+  echo "install.sh: missing required dependencies: ${missing[*]}" >&2
+  echo "  Debian/Ubuntu/WSL:  sudo apt install -y ${missing[*]}" >&2
+  echo "  macOS (Homebrew):   brew install ${missing[*]}" >&2
+  exit 1
+fi
+
 mkdir -p "$dest"
 
 # Don't silently clobber a DIFFERENT existing bao-run. A pre-existing wrapper may
